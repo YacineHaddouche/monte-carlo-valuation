@@ -1,0 +1,4 @@
+Regime,Probability,Revenue 2030 (€bn),Mean value per share,P(value < price)
+Downturn,0.2,45 / 55 / 65,889.5137690345098,0.999976
+Base,0.55,60 / 75 / 90,1170.2830038293978,0.983104
+AI super-cycle,0.25,85 / 100 / 125,1541.8014163684463,0.688052

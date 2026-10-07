@@ -21,4 +21,4 @@ def test_asml_page_runs() -> None:
     assert not app.exception
     metrics = {metric.label: metric.value for metric in app.metric}
     assert metrics["Share price"] == "€1,653"
-    assert metrics["Value, central scenario"] == "€1,068"
+    assert metrics["Value, central scenario"] == "€1,210"

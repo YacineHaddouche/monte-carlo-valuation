@@ -13,11 +13,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from mc_valuation.asml.assumptions import ASML_MARKET, CORRELATIONS_TO_COMPARE, REVENUE_MARGIN_CORRELATION
-from mc_valuation.asml.model import free_cash_flows, value_per_share
+from dataclasses import replace
+
+from mc_valuation.asml.assumptions import (
+    ASML_MARKET,
+    ASML_OPERATIONS,
+    CORRELATIONS_TO_COMPARE,
+    REVENUE_MARGIN_CORRELATION,
+    TERMINAL_METHODS,
+)
+from mc_valuation.asml.model import cost_of_capital, free_cash_flows
 from mc_valuation.asml.simulation import (
+    central_value,
     central_values,
     implied_value,
+    model_bridge,
+    regime_table,
     simulate_asml,
     summarize_valuation,
     tornado_table,
@@ -40,7 +51,7 @@ def central_scenario() -> None:
     section("Central scenario (each driver at its mode or mean)")
     center = central_values()
     flows = free_cash_flows(center["revenue_2030"], center["gross_margin_2030"], center["opex_ratio"],
-                            center["growth_2031_2035"])
+                            center["growth_2031"], center["terminal_growth"])
     table = pd.DataFrame({key: values / 1e9 for key, values in flows.items() if key != "gross_margin"})
     table.insert(1, "gross margin", flows["gross_margin"])
     table.index = [str(year) for year in range(2026, 2026 + len(table))]
@@ -48,8 +59,9 @@ def central_scenario() -> None:
     print(table.to_string())
     table.to_csv(RESULTS_DIR / "asml_central_cash_flows.csv")
     print(f"\nNet cash at 31 December 2025 (leases included): €{ASML_MARKET.net_cash / 1e9:,.2f}bn")
-    print(f"Value per share, central scenario: €{float(value_per_share(**center)):,.0f} "
-          f"(share price: €{ASML_MARKET.share_price:,.2f})")
+    wacc = float(cost_of_capital(center["risk_free"], center["beta"], center["equity_premium"]))
+    print(f"Central WACC: {wacc:.2%}")
+    print(f"Value per share, central scenario: €{central_value():,.0f} (share price: €{ASML_MARKET.share_price:,.2f})")
 
 
 def simulation() -> pd.DataFrame:
@@ -58,7 +70,37 @@ def simulation() -> pd.DataFrame:
     stats = summarize_valuation(results["value_per_share"], ASML_MARKET.share_price)
     print(stats.to_string())
     stats.to_csv(RESULTS_DIR / "asml_summary.csv")
+    print("\nWACC and terminal value / next-year NOPAT (value-driver formula):")
+    print(results[["wacc", "terminal_multiple"]].quantile([0.05, 0.5, 0.95]).to_string())
     return results
+
+
+def regimes() -> None:
+    section("Simulation within each 2030 revenue regime")
+    table = regime_table(ITERATIONS, DEFAULT_SEED, REVENUE_MARGIN_CORRELATION)
+    print(table.to_string(index=False))
+    table.to_csv(RESULTS_DIR / "asml_regimes.csv", index=False)
+
+
+def terminal_methods() -> None:
+    section("Terminal-value cross-check")
+    rows = {}
+    for method in ("value_driver", "exit_multiple"):
+        operations = replace(ASML_OPERATIONS, terminal_method=method)
+        values = simulate_asml(ITERATIONS, DEFAULT_SEED, REVENUE_MARGIN_CORRELATION, operations=operations)
+        stats = summarize_valuation(values["value_per_share"], ASML_MARKET.share_price)
+        rows[TERMINAL_METHODS[method]] = {"Value, central scenario": central_value(operations=operations),
+                                          **stats[["Mean value per share", "P5", "P50", "P95", "P(value < price)"]]}
+    table = pd.DataFrame(rows)
+    print(table.to_string())
+    table.to_csv(RESULTS_DIR / "asml_terminal_methods.csv")
+
+
+def bridge() -> None:
+    section("From the first version of the model to the current one (central scenario)")
+    table = model_bridge()
+    print(table.to_string(index=False))
+    table.to_csv(RESULTS_DIR / "asml_model_bridge.csv", index=False)
 
 
 def correlation_effect() -> None:
@@ -82,8 +124,8 @@ def sensitivities() -> pd.DataFrame:
 
     section("What the share price implies (other drivers at their central value)")
     print(f"Implied revenue 2030: €{implied_value('revenue_2030', 40e9, 300e9) / 1e9:,.0f}bn")
-    print(f"Implied revenue growth in 2031: {implied_value('growth_2031_2035', -0.05, 0.60):.1%}")
-    print(f"Implied WACC: {implied_value('wacc', 0.03, 0.15):.2%}")
+    print(f"Implied revenue growth in 2031: {implied_value('growth_2031', -0.05, 0.60):.1%}")
+    print(f"Implied WACC: {implied_value('wacc', 0.04, 0.15):.2%}")
     return table
 
 
@@ -98,7 +140,7 @@ def style_axis(ax: plt.Axes) -> None:
 def plot(results: pd.DataFrame, tornado: pd.DataFrame) -> None:
     values = results["value_per_share"].to_numpy()
     price = ASML_MARKET.share_price
-    fig, (ax_hist, ax_tornado) = plt.subplots(2, 1, figsize=(9, 8), gridspec_kw={"height_ratios": [3, 2]})
+    fig, (ax_hist, ax_tornado) = plt.subplots(2, 1, figsize=(9, 9), gridspec_kw={"height_ratios": [3, 2.5]})
 
     # Histogram: in red, scenarios where intrinsic value is below the share price. The axis spans
     # P0.1–P99.9 and always includes the share price.
@@ -122,7 +164,7 @@ def plot(results: pd.DataFrame, tornado: pd.DataFrame) -> None:
     style_axis(ax_hist)
 
     # Tornado: bars from the central value to the value at each driver's P5 and P95.
-    center_value = float(value_per_share(**central_values()))
+    center_value = central_value()
     ordered = tornado.iloc[::-1]
     for column in ("Value at P5", "Value at P95"):
         deltas = ordered[column] - center_value
@@ -149,8 +191,11 @@ def plot(results: pd.DataFrame, tornado: pd.DataFrame) -> None:
 def main() -> None:
     RESULTS_DIR.mkdir(exist_ok=True)
     central_scenario()
+    bridge()
     results = simulation()
+    regimes()
     correlation_effect()
+    terminal_methods()
     tornado = sensitivities()
     plot(results, tornado)
 

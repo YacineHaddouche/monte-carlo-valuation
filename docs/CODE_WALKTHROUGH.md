@@ -132,49 +132,70 @@ mean is the share of scenarios with a negative NPV.
 - **Cumulative probability**: for each NPV value x, the probability that NPV ≤ x. P(NPV < 0) can be read
   directly at x = 0.
 
-## 9. `asml/`: the DCF
+## 9. `asml/`: the three-stage DCF
 
 The same logic, applied to a listed company. The NPV is replaced by a DCF and a value per share, and
 P(NPV < 0) is replaced by P(value < share price).
 
 **`assumptions.py`.** Every number carries its source as a comment (2025 annual report page or note, Q2
-2026 guidance, Euronext price). The module has three blocks:
+2026 guidance, Euronext price, Damodaran's implied premium). The module has four blocks:
 
 - `MarketData`: share price, number of shares, cash, debt, leases, non-operating assets, dividends paid
   since the balance-sheet date;
-- `OperatingAssumptions`: what is treated as certain (2026 guidance, tax rate, capex and D&A ratios);
-- `UncertainInputs`: the five simulated drivers.
+- `OperatingAssumptions`: what is treated as certain (2026 guidance, tax rate, capex and D&A ratios,
+  horizon of 15 years, long-run return on new capital `terminal_ronic`, terminal-value method);
+- `UncertainInputs`: the eight simulated drivers;
+- `FIRST_VERSION`: the settings and results of the first, two-stage version of the model, kept so that the
+  dashboard and the report can show how each change moved the value.
 
 `net_cash = cash − debt − lease_liabilities`. ASML holds more cash than debt, so net cash is *added* to the
 Enterprise Value. Leases count as debt because their payments are a fixed financial commitment.
 
+**`PertMixture` (in `distributions.py`).** Revenue in 2030 is a weighted mixture of three PERTs, one per
+regime (downturn, base, AI super-cycle). Its CDF is the weighted sum of the regimes' CDFs
+(`mixture_cdf`). There is no formula for its inverse, so `mixture_ppf` tabulates the CDF on 20,001 points
+and inverts it with `np.interp(probabilities, cdf, grid)`, swapping the roles of x and y. This keeps the
+mixture compatible with the copula, which needs an inverse CDF for every driver.
+
 **`model.py`.**
 
 - `_column` turns an array of n scenarios (shape `(n,)`) into a column (shape `(n, 1)`). Multiplied by an
-  array of 10 years (shape `(10,)`), NumPy automatically produces an `(n, 10)` matrix: one row per
+  array of 15 years (shape `(15,)`), NumPy automatically produces an `(n, 15)` matrix: one row per
   scenario, one column per year. This is **broadcasting**, and it needs no loop over scenarios or years.
+- `cost_of_capital`: CAPM, `Rf + β × ERP`. Debt is negligible, so the WACC equals the cost of equity.
 - `revenue_path`: from 2026 to 2030, `first × (target / first) ** step` with `step` = 0, ¼, ½, ¾, 1 gives
-  constant growth that lands exactly on the 2030 driver. From 2031, `fade` = 1, 0.8 … 0.2 shrinks the
-  extra growth towards terminal growth, and `np.cumprod` compounds it year after year.
+  constant growth that lands exactly on the 2030 driver. From 2031, `fade` = 1, 0.9 … 0.1 shrinks the
+  extra growth towards perpetual growth by 2040, and `np.cumprod` compounds it year after year.
 - `ramp`: moves the gross margin and the cost ratio linearly from their 2026 value to their 2030 value,
   then keeps them flat.
-- `free_cash_flows`: EBIT = sales × (gross margin − cost ratio); FCF = EBIT − tax + D&A − capex − working
-  capital. Working capital is invested on each *additional* euro of sales, so the previous year's revenue
-  is needed (2025 actual for 2026).
-- `enterprise_value`: the sum of discounted FCFs plus the terminal value `FCF_N × (1 + g) / (WACC − g)`,
-  discounted over N years. A test checks that a growing perpetuity gives back `FCF / (WACC − g)`.
+- `free_cash_flows`: EBIT = sales × (gross margin − cost ratio); NOPAT = EBIT − tax; FCF = NOPAT + D&A −
+  capex − working capital. Working capital is invested on each *additional* euro of sales, so the
+  previous year's revenue is needed (2025 actual for 2026).
+- `terminal_multiple` and `terminal_value`: the **value-driver formula**
+  `NOPAT × (1 − g / RONIC) / (WACC − g)`. To grow at g, a company must reinvest g / RONIC of its profits;
+  only the rest is paid out as free cash flow. Two tests pin it down: with g = 0 it is a plain perpetuity
+  `NOPAT / WACC`, and with RONIC = WACC growth adds no value. The same function also offers an exit
+  multiple (`multiple × NOPAT`) as a cross-check, and the first version's Gordon growth on the last FCF.
+- `enterprise_value`: the sum of discounted FCFs plus the discounted terminal value. A test checks that a
+  growing perpetuity gives back `FCF / (WACC − g)`.
 - `value_per_share`: equity value at 31 December 2025 per share, then **rolled forward** to the share-price
   date: `× (1 + WACC) ** (275 / 365)` for the time value, minus the dividends paid in between. Without it,
   a December 2025 value would be compared with an October 2026 price.
 
 **`simulation.py`.**
 
-- The same copula, with a 5×5 matrix where only the Revenue–Gross margin pair is set to ρ.
-  `inverse_distribution` picks `pert_ppf` or `normal_ppf` depending on the distribution type.
+- The same copula, with an 8×8 matrix where only the Revenue–Gross margin pair is set to ρ.
+  `inverse_distribution` picks `mixture_ppf`, `pert_ppf` or `normal_ppf` depending on the distribution
+  type. The WACC and the implied terminal multiple are then computed for each scenario.
+- `value_scenarios`: values a set of drivers; a `"wacc"` entry overrides `Rf + β × ERP`, which the reverse
+  DCF and the comparison with the first version use.
+- `regime_table`: reruns the simulation inside each revenue regime, to see which regime the price needs.
 - `tornado_table`: one driver at a time moves from its P5 to its P95.
 - `implied_value` (**reverse DCF**): `optimize.brentq(gap, lower, upper)` finds the value x such that
   `value_per_share(x) − share_price = 0`, as long as the function changes sign between `lower` and
   `upper`. This answers the question "what does the market assume?".
+- `model_bridge`: the central value under the first version, then after each change (longer fade,
+  value-driver terminal value, WACC from its components), so each step's effect can be read separately.
 
 ## 10. Tests (`tests/`)
 
@@ -190,5 +211,7 @@ key tests are:
   within 4 SE, because the model is linear in each input and the inputs are independent and centred on
   the base case;
 - ASML: net cash from the balance sheet, revenue path hitting the guidance and the 2030 driver, fading
-  growth, growing-perpetuity check, achieved correlation, and a reverse DCF that reproduces the share price;
+  growth, CAPM, value-driver and exit-multiple terminal values, growing-perpetuity check, mixture weights
+  and inverse CDF, the first version's €1,068 reproduced exactly, achieved correlation, and a reverse DCF
+  that reproduces the share price;
 - both dashboard pages run without error.

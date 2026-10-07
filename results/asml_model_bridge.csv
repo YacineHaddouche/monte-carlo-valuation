@@ -1,0 +1,6 @@
+Step,Value per share,Change
+"First version: 10-year DCF, Gordon growth on the 2035 FCF, WACC 9.0%",1068.3097337120635,
+Fade period extended to 2040 (three-stage DCF),1157.8079184110368,89.49818469897332
+Terminal value by the value-driver formula (RONIC 40%),1150.3276929619453,-7.480225449091449
+WACC built from Rf + β × ERP: 8.70%,1209.9466174875404,59.61892452559505
+Current central drivers,1209.9466174875404,0.0

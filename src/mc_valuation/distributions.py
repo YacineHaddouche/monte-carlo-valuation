@@ -1,4 +1,4 @@
-"""Probability distributions used for the inputs: Normal and PERT."""
+"""Probability distributions used for the inputs: Normal, PERT and scenario-weighted PERT mixtures."""
 
 from dataclasses import dataclass
 from typing import Sequence
@@ -52,6 +52,31 @@ class PertParams:
         return (self.minimum + 4 * self.mode + self.maximum) / 6
 
 
+@dataclass(frozen=True)
+class PertMixture:
+    """Scenario-weighted mixture of PERT distributions: one PERT per regime, drawn with probability `weight`."""
+
+    components: tuple[PertParams, ...]
+    weights: tuple[float, ...]
+    names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not (len(self.components) == len(self.weights) == len(self.names) > 0):
+            raise ValueError("A mixture needs one weight and one name per component.")
+        if min(self.weights) < 0 or not np.isclose(sum(self.weights), 1.0):
+            raise ValueError("Mixture weights must be non-negative and sum to 100%.")
+
+    @property
+    def mean(self) -> float:
+        """Probability-weighted average of the component means."""
+        return sum(weight * pert.mean for weight, pert in zip(self.weights, self.components))
+
+    @property
+    def mode(self) -> float:
+        """Central value used for the base case: the mode of the most likely regime."""
+        return self.components[int(np.argmax(self.weights))].mode
+
+
 def normal_params_from_data(data: Sequence[float]) -> NormalParams:
     """Fits a Normal distribution to historical data.
 
@@ -81,3 +106,21 @@ def normal_ppf(probabilities: np.ndarray, params: NormalParams) -> np.ndarray:
 def pert_ppf(probabilities: np.ndarray, params: PertParams) -> np.ndarray:
     """Inverse CDF of the PERT distribution (Excel's BETA.INV, rescaled)."""
     return params.minimum + params.width * stats.beta.ppf(probabilities, params.alpha, params.beta)
+
+
+def mixture_cdf(values: np.ndarray, params: PertMixture) -> np.ndarray:
+    """CDF of a PERT mixture: the weighted sum of each regime's CDF."""
+    values = np.asarray(values, dtype=float)
+    return sum(weight * stats.beta.cdf((values - pert.minimum) / pert.width, pert.alpha, pert.beta)
+               for weight, pert in zip(params.weights, params.components))
+
+
+def mixture_ppf(probabilities: np.ndarray, params: PertMixture, grid_points: int = 20_001) -> np.ndarray:
+    """Inverse CDF of a PERT mixture.
+
+    A mixture has no closed-form inverse, so we tabulate its CDF on a fine grid and interpolate backwards
+    (np.interp with the roles of x and y swapped).
+    """
+    grid = np.linspace(min(p.minimum for p in params.components), max(p.maximum for p in params.components),
+                       grid_points)
+    return np.interp(probabilities, mixture_cdf(grid, params), grid)

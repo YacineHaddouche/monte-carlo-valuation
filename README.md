@@ -13,17 +13,17 @@ edit every assumption and rerun the simulation in the browser.
 
 | | Investment project (NPV) | ASML (value per share) |
 | --- | --- | --- |
-| Deterministic / central value | €33,973 | €1,068 |
-| Monte Carlo mean (1,000,000 iterations) | −€15,688 | €1,083 |
-| P5 / P95 | −€208,948 / €184,174 | €795 / €1,440 |
-| Probability of the adverse outcome | **P(NPV < 0) = 55.8%** | **P(value < share price of €1,653) = 99.1%** |
+| Deterministic / central value | €33,973 | €1,210 |
+| Monte Carlo mean (1,000,000 iterations) | −€15,688 | €1,210 |
+| P5 / P95 | −€208,948 / €184,174 | €766 / €1,796 |
+| Probability of the adverse outcome | **P(NPV < 0) = 55.8%** | **P(value < share price of €1,653) = 90.5%** |
 
 - **Investment project.** The base case shows a positive NPV, but once the inputs follow justified
   distributions (downside-skewed price, capacity cap, correlated demand) the mean NPV turns negative: in
   expectation the project does not cover its cost of capital.
-- **ASML.** Even with assumptions above the company's own 2030 targets, the share price sits in the far
-  right tail of the distribution. A reverse DCF shows it requires about €122bn of revenue in 2030 (company
-  range: €44–60bn) or a WACC of about 6.8%.
+- **ASML.** In a three-stage DCF with scenario-weighted revenue regimes, the share price sits in the right
+  tail of the distribution. A reverse DCF shows it is consistent with an AI super-cycle: about €106bn of
+  revenue in 2030 (company range: €44–60bn) or a WACC of about 7.1%.
 - **Validation.** The Python implementation matches the Excel model within sampling error on every
   statistic tested (all z-scores below 2).
 
@@ -76,13 +76,16 @@ P(NPV < 0) stays below 2 combined standard errors (at most 1.5). Details are in
 
 ASML is the sole supplier of EUV lithography systems. In 2025 it reported €32.7bn of sales and a 52.8%
 gross margin, and in July 2026 it raised its 2026 guidance to €43–45bn. The same Monte Carlo engine
-drives a 10-year DCF built from the 2025 annual report (US GAAP), with five uncertain drivers:
+drives a three-stage DCF built from the 2025 annual report (US GAAP): an explicit forecast for 2026–2030,
+a fade period for 2031–2040 in which growth converges to its perpetual rate, and a terminal value by the
+value-driver formula, NOPAT × (1 − g / RONIC) / (WACC − g). Eight drivers are uncertain:
 
-- revenue in 2030;
+- revenue in 2030, as a weighted mixture of three regimes (downturn 20%, base 55%, AI super-cycle 25%);
 - gross margin in 2030;
 - R&D and SG&A as a share of sales;
-- revenue growth after 2030;
-- WACC.
+- revenue growth in 2031, fading to 2040;
+- perpetual growth;
+- the risk-free rate, β and the equity risk premium, which build the WACC (Rf + β × ERP).
 
 Revenue and gross margin are linked through a Gaussian copula. Net cash and non-operating assets come
 from the 31 December 2025 balance sheet; the value per share is rolled forward to the share-price date
@@ -90,42 +93,47 @@ from the 31 December 2025 balance sheet; the value per share is rolled forward t
 
 | Result (1,000,000 iterations) | Value |
 | --- | --- |
-| Value per share, central scenario | €1,068 |
-| P5 / P50 / P95 | €795 / €1,062 / €1,440 |
-| **P(intrinsic value < share price)** | **99.1%** |
-| 2030 revenue implied by the share price (reverse DCF) | €122bn (company range: €44–60bn) |
-| WACC implied by the share price | 6.8% (model: 9.0%) |
+| Value per share, central scenario | €1,210 |
+| P5 / P50 / P95 | €766 / €1,168 / €1,796 |
+| **P(intrinsic value < share price)** | **90.5%** (77.8% with a 20x exit multiple as terminal value) |
+| P(value < price) in the AI super-cycle regime | 68.8% |
+| 2030 revenue implied by the share price (reverse DCF) | €106bn (company range: €44–60bn) |
+| WACC implied by the share price | 7.1% (model: 8.7%) |
 
 ![ASML valuation](results/asml_valuation.png)
 
-The WACC and the size of the 2030 market dominate the tornado chart. The result is sensitive to the
-discount rate: at a 7.5% WACC the central value rises to about €1,400. The full analysis, assumptions,
-sources and limitations are in [docs/ASML_REPORT.md](docs/ASML_REPORT.md).
+The size of the 2030 market dominates the tornado chart, followed by growth after 2030 and the
+components of the cost of capital. A first version of the model (10-year DCF, Gordon growth on the 2035
+FCF) gave P(value < price) = 99.1%: a model that disagrees with the market in 99% of its scenarios is more
+likely to be too narrow than the market is to be wrong. Its terminal value implied that ASML would be a
+mature company by 2035. The report walks through the changes step by step, with the full assumptions,
+sources and limitations: [docs/ASML_REPORT.md](docs/ASML_REPORT.md).
 
 ## Dashboard
 
 Every assumption can be edited, along with the number of iterations, the seed and ρ. Each page shows the
 statistics with their standard errors, the distribution of outcomes, a tornado chart and a CSV export.
 The investment-project page adds the cumulative probability curve and the achieved-correlation check;
-the ASML page adds a reverse DCF and the central-scenario cash flows.
+the ASML page adds results by revenue regime, a choice of terminal-value method, a reverse DCF, a
+comparison with the first version of the model and the central-scenario cash flows.
 
 ## Project structure
 
 ```
 src/mc_valuation/
     assumptions.py    inputs (base case, distributions, correlation, seed), kept separate from the code
-    distributions.py  Normal and PERT: sampling, inverse CDF (ppf), fitting on data
+    distributions.py  Normal, PERT and PERT mixtures: sampling, inverse CDF (ppf), fitting on data
     model.py          FCF, vectorised NPV, break-even
     correlation.py    Gaussian copula: Cholesky, correlation-matrix checks (positive semi-definite)
     simulation.py     vectorised simulations (no loop over iterations)
     summary.py        Mean, SD, P5, P50, P95, P(NPV < 0) and standard errors
     validation.py     Excel reference results and statistical Python-vs-Excel tests
-    asml/             sourced assumptions, vectorised DCF, simulation, tornado, reverse DCF
+    asml/             sourced assumptions, three-stage DCF, simulation, tornado, reverse DCF
 scripts/run_validation.py   validation tables and charts (results/)
 scripts/run_asml.py         ASML valuation results and chart
 Investment_project_NPV.py   dashboard, investment-project page
 pages/ASML_valuation.py     dashboard, ASML page
-tests/                      pytest suite (37 tests)
+tests/                      pytest suite (42 tests)
 docs/                       validation findings, ASML report, code walkthrough
 excel/                      Excel reference model
 ```
@@ -137,7 +145,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-pytest                                    # 37 tests, including base-case NPV = €33,973.09
+pytest                                    # 42 tests, including base-case NPV = €33,973.09
 python scripts/run_validation.py          # Excel vs Python at 5,000 and 1,000,000 iterations
 python scripts/run_asml.py                # ASML Monte Carlo valuation
 streamlit run Investment_project_NPV.py   # dashboard ("ASML valuation" page in the sidebar)
